@@ -1,0 +1,804 @@
+{
+ "name": "AI Lead Intake: Validate, Draft a First Reply with Groq, Log to Sheets",
+ "nodes": [
+  {
+   "parameters": {
+    "formTitle": "New Project Inquiry",
+    "formDescription": "Tell us about the automation service you need",
+    "formFields": {
+     "values": [
+      {
+       "fieldLabel": "Your name"
+      },
+      {
+       "fieldLabel": "Email address"
+      },
+      {
+       "fieldLabel": "Service needed"
+      },
+      {
+       "fieldLabel": "Estimated budget (USD)"
+      }
+     ]
+    },
+    "options": {}
+   },
+   "id": "0776efd4-0705-4ec6-99cf-6d91e712f071",
+   "name": "On form submission",
+   "type": "n8n-nodes-base.formTrigger",
+   "typeVersion": 2.6,
+   "position": [
+    -624,
+    240
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "\nconst j = $json;\n\n// Read the actual form fields\nconst full_name = String(j[\"Your name\"] ?? \"\").trim();\nconst email = String(j[\"Email address\"] ?? \"\").trim().toLowerCase();\nconst service = String(j[\"Service needed\"] ?? \"\").trim();\n\nconst budgetRaw = j[\"Estimated budget (USD)\"];\nconst budgetText =\n  budgetRaw === undefined || budgetRaw === null\n    ? \"\"\n    : String(budgetRaw).trim();\n\nconst budget = budgetText === \"\" ? NaN : Number(budgetText);\n\n// Collect validation errors\nconst errors = [];\n\nif (full_name.length < 2) {\n  errors.push(\"full_name_missing_or_too_short\");\n}\n\nif (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) {\n  errors.push(\"email_invalid\");\n}\n\nif (!service) {\n  errors.push(\"service_missing\");\n}\n\nif (\n  budgetText === \"\" ||\n  !Number.isFinite(budget) ||\n  budget < 0\n) {\n  errors.push(\"budget_missing_or_invalid\");\n}\n\n// Return normalized data\nreturn {\n  json: {\n    lead_id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,\n    submitted_at: j.submittedAt || new Date().toISOString(),\n    full_name,\n    email,\n    service,\n    budget: Number.isFinite(budget) ? budget : \"\",\n    is_valid: errors.length === 0,\n    validation_errors: errors.join(\", \"),\n    lead_status: errors.length === 0 ? \"New\" : \"Needs Review\",\n    ai_message: \"\",\n    source: \"n8n Form\"\n  }\n};\n"
+   },
+   "id": "d19d7e06-d206-4231-9e0f-22214b7a5431",
+   "name": "Normalize & Validate",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    -416,
+    144
+   ]
+  },
+  {
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "strict",
+      "version": 4
+     },
+     "conditions": [
+      {
+       "id": "4195d626-3987-4c92-8f11-06d87bc2d972",
+       "leftValue": "={{ $json.is_valid }}",
+       "rightValue": "",
+       "operator": {
+        "type": "boolean",
+        "operation": "true",
+        "singleValue": true
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   },
+   "id": "f8960915-cde9-477c-981c-c80be2cb2740",
+   "name": "Valid Lead?",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2.4,
+   "position": [
+    -256,
+    240
+   ]
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "https://api.groq.com/openai/v1/chat/completions",
+    "authentication": "predefinedCredentialType",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Content-Type",
+       "value": "application/json"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "=\n{{ JSON.stringify({\n  model: \"openai/gpt-oss-20b\",\n  messages: [\n    {\n      role: \"user\",\n      content:\n        \"Write a warm, concise, professional first-response draft in English.\\n\" +\n        \"Customer name: \" + $json.full_name + \"\\n\" +\n        \"Requested service: \" + $json.service + \"\\n\" +\n        \"Estimated budget: \" + $json.budget + \" USD\\n\" +\n        \"Acknowledge the request, do not invent prices or delivery dates, \" +\n        \"ask exactly one relevant follow-up question, and keep the message under 70 words. \" +\n        \"Return only the final message. Do not claim it was sent.\"\n    }\n  ],\n  max_completion_tokens: 512,\n  reasoning_effort: \"low\",\n  include_reasoning: false,\n  temperature: 0.4,\n  stream: false\n}) }}\n\n",
+    "options": {
+     "response": {
+      "response": {
+       "responseFormat": "json"
+      }
+     }
+    },
+    "nodeCredentialType": "groqApi"
+   },
+   "id": "b3975316-c79d-4a02-b152-08bc237c5375",
+   "name": "Groq: Write First Reply",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.5,
+   "position": [
+    -64,
+    128
+   ],
+   "onError": "continueErrorOutput"
+  },
+  {
+   "parameters": {
+    "operation": "append",
+    "documentId": {
+     "__rl": true,
+     "value": "",
+     "mode": "id"
+    },
+    "sheetName": {
+     "__rl": true,
+     "value": "Leads",
+     "mode": "name"
+    },
+    "columns": {
+     "mappingMode": "autoMapInputData",
+     "value": {},
+     "matchingColumns": [],
+     "schema": [
+      {
+       "id": "lead_id",
+       "displayName": "lead_id",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "submitted_at",
+       "displayName": "submitted_at",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "full_name",
+       "displayName": "full_name",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "email",
+       "displayName": "email",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "service",
+       "displayName": "service",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "budget",
+       "displayName": "budget",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "ai_message",
+       "displayName": "ai_message",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "lead_status",
+       "displayName": "lead_status",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "validation_errors",
+       "displayName": "validation_errors",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "source",
+       "displayName": "source",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "is_valid",
+       "displayName": "is_valid",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "error_details",
+       "displayName": "error_details",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      }
+     ],
+     "attemptToConvertTypes": false,
+     "convertFieldsToString": false
+    },
+    "options": {}
+   },
+   "id": "0395441e-c097-4604-9da8-3819e2e98083",
+   "name": "Save Lead - Success",
+   "type": "n8n-nodes-base.googleSheets",
+   "typeVersion": 4.7,
+   "position": [
+    320,
+    -48
+   ]
+  },
+  {
+   "parameters": {
+    "mode": "runOnceForEachItem",
+    "jsCode": "\nconst lead = $('Normalize & Validate').item.json;\n\nconst raw = $json.choices?.[0]?.message?.content;\nlet ai_message = String(raw ?? '').trim();\n\n// Remove placeholder signature\nai_message = ai_message\n  .replace(/\\s*(?:Best regards|Kind regards|Regards),?\\s*\\n*\\[Your Name\\]\\s*$/i, '')\n  .replace(/\\[Your Name\\]/gi, '')\n  .trim();\n\nif (!ai_message) {\n  throw new Error('AI response is empty. Cannot save this lead.');\n}\n\nreturn {\n  json: {\n    lead_id: lead.lead_id,\n    submitted_at: lead.submitted_at,\n    full_name: lead.full_name,\n    email: lead.email,\n    service: lead.service,\n    budget: lead.budget,\n    ai_message,\n    lead_status: 'New',\n    validation_errors: '',\n    source: 'n8n Form'\n  }\n};\n\n"
+   },
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    48,
+    -48
+   ],
+   "id": "1096e3b4-74c9-41ba-bfdf-98904611ec5e",
+   "name": "Build Success Row"
+  },
+  {
+   "parameters": {
+    "operation": "append",
+    "documentId": {
+     "__rl": true,
+     "value": "",
+     "mode": "id"
+    },
+    "sheetName": {
+     "__rl": true,
+     "value": "Leads",
+     "mode": "name"
+    },
+    "columns": {
+     "mappingMode": "autoMapInputData",
+     "value": {},
+     "matchingColumns": [],
+     "schema": [
+      {
+       "id": "lead_id",
+       "displayName": "lead_id",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "submitted_at",
+       "displayName": "submitted_at",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "full_name",
+       "displayName": "full_name",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "email",
+       "displayName": "email",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "service",
+       "displayName": "service",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "budget",
+       "displayName": "budget",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "ai_message",
+       "displayName": "ai_message",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "lead_status",
+       "displayName": "lead_status",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "validation_errors",
+       "displayName": "validation_errors",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "source",
+       "displayName": "source",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "is_valid",
+       "displayName": "is_valid",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      },
+      {
+       "id": "error_details",
+       "displayName": "error_details",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true,
+       "removed": false
+      }
+     ],
+     "attemptToConvertTypes": false,
+     "convertFieldsToString": false
+    },
+    "options": {}
+   },
+   "type": "n8n-nodes-base.googleSheets",
+   "typeVersion": 4.7,
+   "position": [
+    -64,
+    336
+   ],
+   "id": "346c8570-c1d5-4296-805e-c5db19ecb1a6",
+   "name": "Save Lead - Needs Review"
+  },
+  {
+   "parameters": {
+    "mode": "runOnceForEachItem",
+    "jsCode": "\nconst lead = $('Normalize & Validate').item.json;\n\nconst rawError =\n  $json.error?.message ??\n  $json.message ??\n  $json.description ??\n  'AI generation failed';\n\nreturn {\n  json: {\n    lead_id: lead.lead_id,\n    submitted_at: lead.submitted_at,\n    full_name: lead.full_name,\n    email: lead.email,\n    service: lead.service,\n    budget: lead.budget,\n    ai_message: '',\n    lead_status: 'AI Error',\n    validation_errors: '',\n    source: 'n8n Form',\n    error_details: String(rawError).slice(0, 500)\n  }\n};\n"
+   },
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    160,
+    224
+   ],
+   "id": "753bacf5-0d6b-4b66-931b-25306f0ce916",
+   "name": "Build Error Row"
+  },
+  {
+   "parameters": {
+    "operation": "append",
+    "documentId": {
+     "__rl": true,
+     "value": "",
+     "mode": "id"
+    },
+    "sheetName": {
+     "__rl": true,
+     "value": "Leads",
+     "mode": "name"
+    },
+    "columns": {
+     "mappingMode": "autoMapInputData",
+     "value": {},
+     "matchingColumns": [],
+     "schema": [
+      {
+       "id": "lead_id",
+       "displayName": "lead_id",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true
+      },
+      {
+       "id": "submitted_at",
+       "displayName": "submitted_at",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true
+      },
+      {
+       "id": "full_name",
+       "displayName": "full_name",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true
+      },
+      {
+       "id": "email",
+       "displayName": "email",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true
+      },
+      {
+       "id": "service",
+       "displayName": "service",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true
+      },
+      {
+       "id": "budget",
+       "displayName": "budget",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true
+      },
+      {
+       "id": "ai_message",
+       "displayName": "ai_message",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true
+      },
+      {
+       "id": "lead_status",
+       "displayName": "lead_status",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true
+      },
+      {
+       "id": "validation_errors",
+       "displayName": "validation_errors",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true
+      },
+      {
+       "id": "source",
+       "displayName": "source",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true
+      },
+      {
+       "id": "is_valid",
+       "displayName": "is_valid",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true
+      },
+      {
+       "id": "error_details",
+       "displayName": "error_details",
+       "required": false,
+       "defaultMatch": false,
+       "display": true,
+       "type": "string",
+       "canBeUsedToMatch": true
+      }
+     ],
+     "attemptToConvertTypes": false,
+     "convertFieldsToString": false
+    },
+    "options": {}
+   },
+   "type": "n8n-nodes-base.googleSheets",
+   "typeVersion": 4.7,
+   "position": [
+    384,
+    224
+   ],
+   "id": "b65b4cd8-9570-460e-8128-a5a53376f44c",
+   "name": "Save Lead - AI Error"
+  },
+  {
+   "parameters": {
+    "resource": "draft",
+    "subject": "=Re: your inquiry about {{ $('Build Success Row').item.json.service }}",
+    "message": "={{ $('Build Success Row').item.json.ai_message }}",
+    "options": {
+     "sendTo": "={{ $('Build Success Row').item.json.email }}"
+    }
+   },
+   "type": "n8n-nodes-base.gmail",
+   "typeVersion": 2.1,
+   "position": [
+    608,
+    -48
+   ],
+   "name": "Draft Reply for Review",
+   "notesInFlow": true,
+   "id": "f6570414-9f60-4bfa-9b16-2aeeee4358ad",
+   "notes": "Saves the AI reply as a Gmail DRAFT to the lead. Review and send manually. Needs a Gmail credential."
+  },
+  {
+   "parameters": {
+    "sendTo": "your-email@example.com",
+    "subject": "=New lead: {{ $('Build Success Row').item.json.full_name }} ({{ $('Build Success Row').item.json.service }})",
+    "message": "=New lead received.\n\nName: {{ $('Build Success Row').item.json.full_name }}\nEmail: {{ $('Build Success Row').item.json.email }}\nService: {{ $('Build Success Row').item.json.service }}\nBudget (USD): {{ $('Build Success Row').item.json.budget }}\nLead ID: {{ $('Build Success Row').item.json.lead_id }}\n\nAI draft reply is waiting in your Gmail drafts.",
+    "options": {
+     "appendAttribution": false
+    }
+   },
+   "type": "n8n-nodes-base.gmail",
+   "typeVersion": 2.1,
+   "position": [
+    896,
+    -48
+   ],
+   "name": "Notify Owner of New Lead",
+   "notesInFlow": true,
+   "id": "cf4f0803-2bee-4422-b72d-7757af31329d",
+   "notes": "Emails the owner a summary of each new valid lead. Needs a Gmail credential."
+  },
+  {
+   "parameters": {
+    "content": "## AI Lead Management System\nA client fills out the inquiry form. The workflow cleans and validates the data, an AI model (Groq) writes a personalized first reply, and every lead is saved to Google Sheets.\n\n**Paths**\n1. Valid lead: AI reply, save as New, draft reply for review, notify owner\n2. Invalid lead: saved as Needs Review\n3. AI failure: saved as AI Error\n\nSetup: connect Groq, Google Sheets and Gmail credentials.",
+    "height": 340,
+    "width": 520,
+    "color": 4
+   },
+   "type": "n8n-nodes-base.stickyNote",
+   "typeVersion": 1,
+   "position": [
+    -672,
+    -304
+   ],
+   "name": "Note 1",
+   "id": "95c91fe7-8405-4ed0-9d99-f42b497986bd"
+  },
+  {
+   "parameters": {
+    "content": "### 1. Intake and validation\nForm, trim and lowercase inputs, check name, email, service and budget.",
+    "height": 300,
+    "width": 480,
+    "color": 7
+   },
+   "type": "n8n-nodes-base.stickyNote",
+   "typeVersion": 1,
+   "position": [
+    -672,
+    80
+   ],
+   "name": "Note 2",
+   "id": "8ed222c8-e58b-42bb-9dcf-02e44a74dbef"
+  },
+  {
+   "parameters": {
+    "content": "### 2. AI reply and fallbacks\nGroq writes a short, warm reply and never invents prices or dates. Invalid leads and AI errors are saved for review.",
+    "height": 370,
+    "width": 560,
+    "color": 6
+   },
+   "type": "n8n-nodes-base.stickyNote",
+   "typeVersion": 1,
+   "position": [
+    -112,
+    64
+   ],
+   "name": "Note 3",
+   "id": "826a9985-b1cd-4d94-b6e9-d320357a2cc2"
+  },
+  {
+   "parameters": {
+    "content": "### 3. Follow-up (review first)\nReply is saved as a Gmail draft, never auto-sent. Owner gets a new-lead email. Enable after connecting Gmail.",
+    "height": 300,
+    "width": 640,
+    "color": 3
+   },
+   "type": "n8n-nodes-base.stickyNote",
+   "typeVersion": 1,
+   "position": [
+    560,
+    -160
+   ],
+   "name": "Note 4",
+   "id": "5f91e2f0-a5e5-4c6e-b6cf-5d5863c9b05d"
+  }
+ ],
+ "connections": {
+  "On form submission": {
+   "main": [
+    [
+     {
+      "node": "Normalize & Validate",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Normalize & Validate": {
+   "main": [
+    [
+     {
+      "node": "Valid Lead?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Valid Lead?": {
+   "main": [
+    [
+     {
+      "node": "Groq: Write First Reply",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Save Lead - Needs Review",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Groq: Write First Reply": {
+   "main": [
+    [
+     {
+      "node": "Build Success Row",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Build Error Row",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Build Success Row": {
+   "main": [
+    [
+     {
+      "node": "Save Lead - Success",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Build Error Row": {
+   "main": [
+    [
+     {
+      "node": "Save Lead - AI Error",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Save Lead - Success": {
+   "main": [
+    [
+     {
+      "node": "Draft Reply for Review",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Draft Reply for Review": {
+   "main": [
+    [
+     {
+      "node": "Notify Owner of New Lead",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {},
+ "pinData": {}
+}
